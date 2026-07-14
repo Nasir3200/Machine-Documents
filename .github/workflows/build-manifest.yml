@@ -1,1 +1,67 @@
+name: Build Machine Documents manifest
 
+# Publishes a single static data.json listing every file in this repo to
+# GitHub Pages — the same pattern the Machine-Photos repo already uses.
+# The app then reads that one static file instead of querying the GitHub
+# API live, so it never hits the 60-req/hour rate limit or the 500 error
+# a single giant `?recursive=1` call was causing on this repo's size.
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 3 * * *'   # matches the existing "Daily update" commit cadence
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Build flat file manifest (data.json)
+        run: |
+          mkdir -p _site
+          python3 - <<'EOF'
+          import json, os, datetime
+
+          IGNORE_DIRS = {'.git', '.github', '_site'}
+          files = []
+          for root, dirs, filenames in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
+              for fn in filenames:
+                  if fn.startswith('.'):
+                      continue
+                  full = os.path.relpath(os.path.join(root, fn), '.').replace('\\', '/')
+                  files.append(full)
+          files.sort()
+
+          with open('_site/data.json', 'w') as f:
+              json.dump(
+                  {
+                      "files": files,
+                      "generatedAt": datetime.datetime.utcnow().isoformat() + "Z"
+                  },
+                  f
+              )
+          print(f"Wrote {len(files)} file paths to _site/data.json")
+          EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
