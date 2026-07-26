@@ -1,68 +1,64 @@
 name: Build Machine Documents manifest
 
-# Rebuilds data.json (the file the web app searches against) any time
-# files change on main, plus a daily safety-net run and a manual button.
+# Publishes a single static data.json listing every file in this repo to
+# GitHub Pages — the same pattern the Machine-Photos repo already uses.
+# The app then reads that one static file instead of querying the GitHub
+# API live, so it never hits the 60-req/hour rate limit or the 500 error
+# a single giant `?recursive=1` call was causing on this repo's size.
+
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: {}
   schedule:
-    - cron: '0 6 * * *'   # 06:00 UTC daily, matches the existing daily upload schedule
+    - cron: '0 3 * * *'   # matches the existing "Daily update" commit cadence
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Build data.json
-        shell: bash
+      - name: Build flat file manifest (data.json)
         run: |
-          python3 - <<'PY'
-          import json, os
-
-          root = "."
-          # Folders/files that should never appear in the manifest.
-          SKIP_DIRS = {".git", ".github"}
-          KEEP_EXT = {
-              ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp",
-              ".tiff", ".tif", ".webp", ".heic", ".heif", ".svg", ".ico",
-          }
-
+          mkdir -p _site
+          python3 - <<'EOF'
+          import json, os, datetime
+          IGNORE_DIRS = {'.git', '.github', '_site'}
           files = []
-          for dirpath, dirnames, filenames in os.walk(root):
-              dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-              for name in filenames:
-                  ext = os.path.splitext(name)[1].lower()
-                  if ext not in KEEP_EXT:
+          for root, dirs, filenames in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
+              for fn in filenames:
+                  if fn.startswith('.'):
                       continue
-                  full_path = os.path.join(dirpath, name)
-                  rel_path = os.path.relpath(full_path, root).replace(os.sep, "/")
-                  mtime = os.path.getmtime(full_path)
-                  files.append({"path": rel_path, "modified": int(mtime)})
+                  full = os.path.relpath(os.path.join(root, fn), '.').replace('\\', '/')
+                  files.append(full)
+          files.sort()
+          with open('_site/data.json', 'w') as f:
+              json.dump(
+                  {
+                      "files": files,
+                      "generatedAt": datetime.datetime.utcnow().isoformat() + "Z"
+                  },
+                  f
+              )
+          print(f"Wrote {len(files)} file paths to _site/data.json")
+          EOF
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
 
-          # Stable order so diffs/caching behave predictably.
-          files.sort(key=lambda f: f["path"].lower())
-
-          with open("data.json", "w", encoding="utf-8") as f:
-              json.dump({"files": files, "count": len(files)}, f, ensure_ascii=False)
-
-          print(f"Wrote data.json with {len(files)} file(s).")
-          PY
-
-      - name: Commit and push data.json
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data.json
-          if git diff --cached --quiet; then
-            echo "No changes to data.json — nothing to commit."
-          else
-            git commit -m "Update data.json manifest"
-            git push
-          fi
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
