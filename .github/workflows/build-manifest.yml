@@ -1,4 +1,27 @@
-- name: Checkout repo
+name: Build Machine Documents manifest
+# Publishes a single static data.json listing every file in this repo to
+# GitHub Pages — the same pattern the Machine-Photos repo already uses.
+# The app then reads that one static file instead of querying the GitHub
+# API live, so it never hits the 60-req/hour rate limit or the 500 error
+# a single giant `?recursive=1` call was causing on this repo's size.
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 3 * * *'   # matches the existing "Daily update" commit cadence
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0   # full history needed so git log can find each file's last-commit date
@@ -48,3 +71,10 @@
               )
           print(f"Wrote {len(entries)} file entries to _site/data.json")
           EOF
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
